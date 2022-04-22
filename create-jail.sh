@@ -42,7 +42,7 @@ echo "zfs create -o readonly=on \"$JAILBASE_ZFS/$JAIL\""
 zfs create -o readonly=on "$JAILBASE_ZFS/$JAIL"
 
 echo "=== $JAIL: creating fstab ==="
-cat << EOF > $JAILBASE/$JAIL.fstab
+cat << EOF | tee $JAILBASE/$JAIL.fstab
 # device/nullfs-dir   mountpoint   type   opts   dump   pass
 ${JB_TEMPLATES}/${JAIL_RELEASE}_base ${JAILBASE}/${JAIL} nullfs ro 0 0
 ${JB_THINDATA}/${JAIL} ${JAILBASE}/${JAIL}/skeleton nullfs rw 0 0
@@ -53,6 +53,5 @@ cat << EOF
 $JAIL is prepared. If it is defined in jail.conf(5), you
 should be able to start it right up with:
 
-jail -c $JAIL
-
+# jail -c $JAIL
 EOF
