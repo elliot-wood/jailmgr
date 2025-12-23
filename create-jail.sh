@@ -1,29 +1,33 @@
 #!/bin/sh
 
-# create-jail.sh - quickly prepare a thin jail from a template
+# create-jail.sh - quickly prepare a thin jail from a base jail
 
 # ( assumes templates set up similar to described at                        )
 # ( https://jacob.ludriks.com/2017/06/07/FreeBSD-Thin-Jails/                )
 
-# ( also assumes you're using zfs because you really should be, but it will )
-# ( will eventually be rewritten for the odd people still using UFS         )
+# ( these scripts require ZFS )
 
-# my zfs dataset names differ slightly from the mountpoints
-JAILBASE="/usr/jails"
-JAILBASE_ZFS="freebsd-root/usr/jails"
+# SCRIPT CONFIGURATION
 
-JB_RELEASE="$JAILBASE/.releases"
-JB_RELEASE_ZFS="$JAILBASE_ZFS/releases"
+#JAILBASE="/usr/jails"
+JAILBASE_ZFS="freebsd-zroot/usr/jails"
+JAILBASE=`zfs get -Ho value mountpoint $JAILBASE_ZFS`
 
-JB_TEMPLATES="$JAILBASE/.templates"
-JB_TEMPLATES_ZFS="$JAILBASE_ZFS/templates"
+#JB_RELEASE="$JAILBASE/.releases"
+JB_RELEASE_ZFS="$JAILBASE_ZFS/.releases"
+JB_RELEASE=`zfs get -Ho value mountpoint $JB_RELEASE_ZFS`
 
-JB_THINDATA="$JAILBASE/.thinjails"
-JB_THINDATA_ZFS="$JAILBASE_ZFS/thinjails"
-
-JAIL_RELEASE="13.0-RELEASE"
+if [ -z "$2" ]; then
+		JAIL_RELEASE=`zfs list -Hrd 1 -o name freebsd-zroot/usr/jails/.releases \
+				| sed 's|.*/||' | grep -E '^[0-9]+\.[0-9]+-RELEASE$' | sort -V |tail -n 1`
+else
+		JAIL_RELEASE="$2"
+fi
 
 JAIL="$1"
+
+MOUNTPOINT_DIRS="bin lib libexec sbin usr/bin usr/lib usr/libdata usr/share usr/include usr/lib32 usr/libexec usr/sbin"
+WRITEABLE_DIRS="etc var root tmp mnt media dev"
 
 if [ "$(id -u)" -gt 0 ]; then
 	echo "$0 needs to be run as root!"
@@ -31,27 +35,54 @@ if [ "$(id -u)" -gt 0 ]; then
 fi
 
 if [ -z "$1" ]; then
-	echo "usage: $0 jail"
+	echo "usage: $0 jail [base-version]"
 	exit 1
 fi 
 
-echo "=== $JAIL: cloning a skeleton to the thinjail directory / dataset... ==="
-echo "zfs clone \"${JB_TEMPLATES_ZFS}/${JAIL_RELEASE}_skeleton@complete\" \"$JB_THINDATA_ZFS/$JAIL\""
-zfs clone "${JB_TEMPLATES_ZFS}/${JAIL_RELEASE}_skeleton@complete" "$JB_THINDATA_ZFS/$JAIL"
-echo "zfs create -o readonly=on \"$JAILBASE_ZFS/$JAIL\""
-zfs create -o readonly=on "$JAILBASE_ZFS/$JAIL"
+echo "=== $JAIL: preparing the jail directory... ==="
+zfs create "${JAILBASE_ZFS}/${JAIL}"
+
+echo "creating directories for base system mountpoints..."
+for dir in $MOUNTPOINT_DIRS; do
+		mkdir -p "${JAILBASE}/${JAIL}/${dir}"
+done
+
+echo "copying writables from base system..."
+#cp -a "${JB_RELEASE}/${JAIL_RELEASE}/{etc,var,root,tmp,mnt,media,dev}" "$JAILBASE/$JAIL/"
+for dir in $WRITEABLE_DIRS; do
+		cp -a "{JB_RELEASE}/${JAIL_RELEASE}/$dir "$JAILBASE/$JAIL/"
+done
 
 echo "=== $JAIL: creating fstab ==="
-cat << EOF | tee $JAILBASE/$JAIL.fstab
-# device/nullfs-dir   mountpoint   type   opts   dump   pass
-${JB_TEMPLATES}/${JAIL_RELEASE}_base ${JAILBASE}/${JAIL} nullfs ro 0 0
-${JB_THINDATA}/${JAIL} ${JAILBASE}/${JAIL}/skeleton nullfs rw 0 0
-EOF
+{
+		echo "# filesystem table file for $JAIL"
+		echo "# device/nullfs-dir mountpoint type options dump pass"
+		for dir in $MOUNTPOINT_DIRS; do
+				echo "${JB_RELEASE}/${JAIL_RELEASE}/$dir ${JAILBASE}/${JAIL}/$dir nullfs ro 0 0"
+		done
+} > "$JAILBASE/$JAIL.fstab"
+
+#cat << EOF | tee $JAILBASE/$JAIL.fstab
+## device/nullfs-dir   mountpoint   type   opts   dump   pass
+#${JB_RELEASE}/${JAIL_RELEASE}/bin ${JAILBASE}/${JAIL}/bin nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/lib ${JAILBASE}/${JAIL}/lib nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/libexec ${JAILBASE}/${JAIL}/libexec nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/sbin ${JAILBASE}/${JAIL}/sbin nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/bin ${JAILBASE}/${JAIL}/usr/bin nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/lib ${JAILBASE}/${JAIL}/usr/lib nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/libdata ${JAILBASE}/${JAIL}/usr/libdata nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/share ${JAILBASE}/${JAIL}/usr/share nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/include ${JAILBASE}/${JAIL}/usr/include nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/lib32 ${JAILBASE}/${JAIL}/usr/lib32 nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/libexec ${JAILBASE}/${JAIL}/usr/libexec nullfs ro 0 0
+#${JB_RELEASE}/${JAIL_RELEASE}/usr/sbin ${JAILBASE}/${JAIL}/usr/sbin nullfs ro 0 0
+#EOF
 
 echo "=== $JAIL: Preparation successful! ==="
 cat << EOF
 $JAIL is prepared. If it is defined in jail.conf(5), you
-should be able to start it right up with:
+should be able to start it right up with either of:
 
 # jail -c $JAIL
+# service jail start $JAIL
 EOF
