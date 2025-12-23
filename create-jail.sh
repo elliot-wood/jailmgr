@@ -50,33 +50,16 @@ done
 echo "copying writables from base system..."
 #cp -a "${JB_RELEASE}/${JAIL_RELEASE}/{etc,var,root,tmp,mnt,media,dev}" "$JAILBASE/$JAIL/"
 for dir in $WRITEABLE_DIRS; do
-		cp -a "{JB_RELEASE}/${JAIL_RELEASE}/$dir "$JAILBASE/$JAIL/"
+		cp -a "${JB_RELEASE}/${JAIL_RELEASE}/$dir" "$JAILBASE/$JAIL/"
 done
 
 echo "=== $JAIL: creating fstab ==="
 {
-		echo "# filesystem table file for $JAIL"
 		echo "# device/nullfs-dir mountpoint type options dump pass"
 		for dir in $MOUNTPOINT_DIRS; do
 				echo "${JB_RELEASE}/${JAIL_RELEASE}/$dir ${JAILBASE}/${JAIL}/$dir nullfs ro 0 0"
 		done
 } > "$JAILBASE/$JAIL.fstab"
-
-#cat << EOF | tee $JAILBASE/$JAIL.fstab
-## device/nullfs-dir   mountpoint   type   opts   dump   pass
-#${JB_RELEASE}/${JAIL_RELEASE}/bin ${JAILBASE}/${JAIL}/bin nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/lib ${JAILBASE}/${JAIL}/lib nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/libexec ${JAILBASE}/${JAIL}/libexec nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/sbin ${JAILBASE}/${JAIL}/sbin nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/bin ${JAILBASE}/${JAIL}/usr/bin nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/lib ${JAILBASE}/${JAIL}/usr/lib nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/libdata ${JAILBASE}/${JAIL}/usr/libdata nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/share ${JAILBASE}/${JAIL}/usr/share nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/include ${JAILBASE}/${JAIL}/usr/include nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/lib32 ${JAILBASE}/${JAIL}/usr/lib32 nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/libexec ${JAILBASE}/${JAIL}/usr/libexec nullfs ro 0 0
-#${JB_RELEASE}/${JAIL_RELEASE}/usr/sbin ${JAILBASE}/${JAIL}/usr/sbin nullfs ro 0 0
-#EOF
 
 echo "=== $JAIL: Preparation successful! ==="
 cat << EOF
@@ -86,3 +69,5 @@ should be able to start it right up with either of:
 # jail -c $JAIL
 # service jail start $JAIL
 EOF
+
+exit 0
