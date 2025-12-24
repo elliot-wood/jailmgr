@@ -1,13 +1,16 @@
-## jailmgr
+## jailmgr -- FreeBSD jail management scripts
 
-Yet another FreeBSD jail manager. It's currently **very incomplete** but my
-intents for jailmgr are:
+Currently, these are the scripts I use for jail management on my
+FreeBSD system.
+
+If I ever get around to making this a full-featured jail manager,
+my intents for it are roughly along these lines:
 
 * Extensively use jail.conf functionality provided by the
   base system, rather than reinventing the wheel
 * Dependency free, so it'll run on an otherwise bone stock modern
   FreeBSD system
-* ZFS-first, but will still work with lesser filesystems
+* ZFS and VNET flavours of opinionated
 * Designed around using VNET for jail networking
 * Provide a nice interface around the existing `jail` / `jexec` 
   / `jls` / etc tools to bring them into line with more modern,
