@@ -48,7 +48,6 @@ for dir in $MOUNTPOINT_DIRS; do
 done
 
 echo "copying writables from base system..."
-#cp -a "${JB_RELEASE}/${JAIL_RELEASE}/{etc,var,root,tmp,mnt,media,dev}" "$JAILBASE/$JAIL/"
 for dir in $WRITEABLE_DIRS; do
 		cp -a "${JB_RELEASE}/${JAIL_RELEASE}/$dir" "$JAILBASE/$JAIL/"
 done
