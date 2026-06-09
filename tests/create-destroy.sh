@@ -3,6 +3,7 @@
 # create-destroy.sh — round-trip test for create-jail.sh + destroy-jail.sh
 #
 # usage: create-destroy.sh [-h] [-r RELEASE] [-c CREATE] [-d DESTROY]
+#                          [--hold | --shell]
 #
 #   -r, --release REL       Release to test with. Default: auto-detected
 #                           from $JAIL_PARENT_ZFS/.releases (newest by
@@ -11,6 +12,11 @@
 #                           Default: ../create-jail.sh (sibling of this dir)
 #   -d, --destroy PATH      Path to destroy-jail.sh.
 #                           Default: ../destroy-jail.sh (sibling of this dir)
+#       --hold              After create, pause for Enter before destroy.
+#                           Useful for a quick peek at the on-disk state.
+#       --shell             After create, drop into $SHELL (or /bin/sh) for
+#                           investigation. Type 'exit' to continue to destroy.
+#                           Mutually exclusive with --hold.
 #   -h, --help              Show this help and exit.
 #
 # What this script does:
@@ -19,6 +25,7 @@
 #   * Run create-jail.sh -n testjail -r $REL.
 #   * Verify the dataset, mountpoint anchors, copied writables, and fstab
 #     all exist and look right.
+#   * (Optionally) pause or drop into a shell for manual inspection.
 #   * Run destroy-jail.sh -n testjail -y.
 #   * Verify everything is gone and no other datasets were touched.
 #
@@ -49,6 +56,7 @@ JAIL_NAME="testjail"
 RELEASE=
 CREATE_SCRIPT="$SCRIPT_DIR/../create-jail.sh"
 DESTROY_SCRIPT="$SCRIPT_DIR/../destroy-jail.sh"
+PAUSE_MODE=
 
 _pass=0
 _fail=0
@@ -127,6 +135,14 @@ parse_args() {
 				[ $# -ge 2 ] || { err "-d requires an argument"; exit 2; }
 				DESTROY_SCRIPT="$2"
 				shift 2
+				;;
+			--hold)
+				PAUSE_MODE=hold
+				shift
+				;;
+			--shell)
+				PAUSE_MODE=shell
+				shift
 				;;
 			--)
 				shift
@@ -292,6 +308,24 @@ main() {
 
 	printf '\n=== verifying post-create state ===\n'
 	verify_post_create
+
+	if [ -n "$PAUSE_MODE" ]; then
+		printf '\n=== paused between create and destroy ===\n'
+		printf 'Jail dataset: %s\n' "$JAIL_PARENT_ZFS/$JAIL_NAME"
+		printf 'Jail dir:     %s\n' "$JAIL_PARENT/$JAIL_NAME"
+		printf 'Fstab:        /etc/jail.conf.d/%s.fstab\n' "$JAIL_NAME"
+		case "$PAUSE_MODE" in
+			hold)
+				printf 'Press Enter to destroy the jail, or Ctrl-C to abort: '
+				read _ || { err "aborted"; exit 1; }
+				;;
+			shell)
+				_sh="${SHELL:-/bin/sh}"
+				printf 'Dropping into %s. Type "exit" to continue to destroy.\n' "$_sh"
+				( cd "$JAIL_PARENT" && "$_sh" ) || true
+				;;
+		esac
+	fi
 
 	printf '\n=== destroying jail ===\n'
 	if "$DESTROY_SCRIPT" -n "$JAIL_NAME" -y; then
