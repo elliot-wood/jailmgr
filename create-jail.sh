@@ -34,8 +34,14 @@
 # What this script does:
 #   * Resolves config (see "Configuration" below) and validates inputs.
 #   * Creates a ZFS dataset at $JAIL_PARENT_ZFS/$NAME (no properties set).
-#   * Copies etc/, var/, root/, and dotfiles from the base release into
-#     the new jail via `cp -RpP $BASE/$REL/. $JAIL/`.
+#   * Copies writables from the base release into the new jail under a
+#     single "copying writables from base release" banner:
+#       - regular files at the base root (.cshrc, .profile, COPYRIGHT, etc.)
+#         are picked up non-specifically via glob + [ -f ] filter, copied
+#         non-recursively with `cp -p`;
+#       - then the directories etc, var, tmp, mnt, media, dev are copied
+#         recursively with `cp -RpP`; root/ is added to that list when
+#         --writable-root is set.
 #   * Creates empty mount-anchor directories for everything the fstab will
 #     nullfs-mount over.
 #   * Writes the host-side fstab to /etc/jail.conf.d/$NAME.fstab
@@ -241,21 +247,63 @@ create_jail() {
 	}
 
 	printf '=== %s: copying writables from base release ===\n' "$JAIL_NAME"
-	cp -RpP "$RELEASE_DIR/." "$JAIL_DIR/" || {
-		err "copy from base release failed"
-		exit 1
-	}
+	_files=
+	for _f in "$RELEASE_DIR"/.[!.]* "$RELEASE_DIR"/*; do
+		[ -f "$_f" ] || continue
+		cp -p "$_f" "$JAIL_DIR/" || {
+			err "failed to copy $_f"
+			exit 1
+		}
+		_files="$_files ${_f##*/}"
+	done
+	if [ -n "$_files" ]; then
+		printf 'copying files:%s\n' "$_files"
+	else
+		printf 'copying files: (none in base)\n'
+	fi
+
+	_writables="etc var tmp mnt media dev"
+	[ "$WRITABLE_ROOT" -eq 1 ] && _writables="$_writables root"
+	_dirs=
+	for _d in $_writables; do
+		if [ ! -e "$RELEASE_DIR/$_d" ]; then
+			continue
+		fi
+		cp -RpP "$RELEASE_DIR/$_d" "$JAIL_DIR/" || {
+			err "failed to copy $_d"
+			exit 1
+		}
+		_dirs="$_dirs $_d"
+	done
+	if [ -n "$_dirs" ]; then
+		printf 'copying directories:%s\n' "$_dirs"
+	else
+		printf 'copying directories: (none copied)\n'
+	fi
+
+	_skipped=
+	for _d in $_writables; do
+		[ -e "$RELEASE_DIR/$_d" ] && continue
+		_skipped="$_skipped $_d"
+	done
+	if [ -n "$_skipped" ]; then
+		printf '  (skipped: not in base:%s)\n' "$_skipped"
+	fi
 
 	printf '=== %s: creating mount-anchor directories ===\n' "$JAIL_NAME"
-	_anchors="bin lib libexec sbin usr/bin usr/lib usr/libdata usr/share usr/include usr/lib32 usr/libexec usr/sbin usr/local usr/ports tmp mnt media dev"
-	[ "$SRC_INCLUDE" -eq 0 ] && _anchors="$_anchors usr/src"
-	[ "$WRITABLE_ROOT" -eq 1 ] && _anchors="$_anchors root"
-	for d in $_anchors; do
-		mkdir -p "$JAIL_DIR/$d" || {
-			err "failed to create anchor dir: $JAIL_DIR/$d"
+	_anchors="bin lib libexec sbin usr/bin usr/lib usr/libdata usr/share usr/include usr/lib32 usr/libexec usr/sbin usr/local usr/ports root tmp mnt media dev"
+	[ "$SRC_INCLUDE" -eq 1 ] && _anchors="$_anchors usr/src"
+	for _a in $_anchors; do
+		mkdir -p "$JAIL_DIR/$_a" || {
+			err "failed to create anchor dir: $JAIL_DIR/$_a"
 			exit 1
 		}
 	done
+	printf 'creating directories:%s\n' "$_anchors"
+}
+
+_fstab_row() {
+	printf '%s\n' "$1	$2	$3	$4	$5	$6"
 }
 
 write_fstab() {
@@ -265,36 +313,27 @@ write_fstab() {
 
 	printf '=== %s: writing fstab to %s ===\n' "$JAIL_NAME" "$FSTAB"
 
-	_src_line=""
-	if [ "$SRC_INCLUDE" -eq 1 ]; then
-		_src_line="$RELEASE_DIR/usr/src	$JAIL_DIR/usr/src	nullfs	ro	0	0"
-	fi
-	_root_line=""
-	if [ "$WRITABLE_ROOT" -eq 0 ]; then
-		_root_line="$RELEASE_DIR/root	$JAIL_DIR/root	nullfs	ro	0	0"
-	fi
-
 	{
 		printf '%s\n' "# device/nullfs-dir	mountpoint	type	opts	dump	pass"
-		printf '%s\n' "$RELEASE_DIR/bin		$JAIL_DIR/bin		nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/lib		$JAIL_DIR/lib		nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/libexec	$JAIL_DIR/libexec	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/sbin		$JAIL_DIR/sbin		nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/bin	$JAIL_DIR/usr/bin	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/lib	$JAIL_DIR/usr/lib	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/libdata	$JAIL_DIR/usr/libdata	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/share	$JAIL_DIR/usr/share	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/include	$JAIL_DIR/usr/include	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/lib32	$JAIL_DIR/usr/lib32	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/libexec	$JAIL_DIR/usr/libexec	nullfs	ro	0	0"
-		printf '%s\n' "$RELEASE_DIR/usr/sbin	$JAIL_DIR/usr/sbin	nullfs	ro	0	0"
-		if [ -n "$_src_line" ]; then
-			printf '%s\n' "$_src_line"
+		_fstab_row "$RELEASE_DIR/bin"         "$JAIL_DIR/bin"         nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/lib"         "$JAIL_DIR/lib"         nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/libexec"     "$JAIL_DIR/libexec"     nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/sbin"        "$JAIL_DIR/sbin"        nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/bin"     "$JAIL_DIR/usr/bin"     nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/lib"     "$JAIL_DIR/usr/lib"     nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/libdata" "$JAIL_DIR/usr/libdata" nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/share"   "$JAIL_DIR/usr/share"   nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/include" "$JAIL_DIR/usr/include" nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/lib32"   "$JAIL_DIR/usr/lib32"   nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/libexec" "$JAIL_DIR/usr/libexec" nullfs ro 0 0
+		_fstab_row "$RELEASE_DIR/usr/sbin"    "$JAIL_DIR/usr/sbin"    nullfs ro 0 0
+		if [ "$SRC_INCLUDE" -eq 1 ]; then
+			_fstab_row "$RELEASE_DIR/usr/src" "$JAIL_DIR/usr/src" nullfs ro 0 0
 		fi
-		if [ -n "$_root_line" ]; then
-			printf '%s\n' "$_root_line"
+		if [ "$WRITABLE_ROOT" -eq 0 ]; then
+			_fstab_row "$RELEASE_DIR/root" "$JAIL_DIR/root" nullfs ro 0 0
 		fi
-		printf '%s\n' "/usr/ports		$JAIL_DIR/usr/ports	nullfs	ro	0	0"
+		_fstab_row "/usr/ports"             "$JAIL_DIR/usr/ports"   nullfs ro 0 0
 	} > "$FSTAB" || {
 		err "failed to write fstab: $FSTAB"
 		exit 1
