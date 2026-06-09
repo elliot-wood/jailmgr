@@ -2,13 +2,21 @@
 #
 # destroy-jail.sh — undo a thin FreeBSD jail created by create-jail.sh
 #
-# usage: destroy-jail.sh -n NAME [-y] [-c CONF]
+# usage: destroy-jail.sh -n NAME [-y] [--remove-conf] [-c CONF]
 #        destroy-jail.sh -h
 #
 #   -n, --name NAME         Jail name. Required.
 #                           Must match: ^[a-z][a-z0-9_-]{0,62}$
 #
 #   -y, --yes               Skip the confirmation prompt.
+#
+#       --remove-conf       Also delete the per-jail conf at
+#                           /etc/jail.conf.d/<N>-<name>.conf if present.
+#                           Without this flag, the conf is left in place
+#                           (so a subsequent create-jail.sh can re-create
+#                           the contents while keeping your config).
+#                           Errors out if more than one conf matches the
+#                           jail name (duplicates are a user-error case).
 #
 #   -c, --conf PATH         Override the config file path. Overrides
 #                           $JAILMGR_CONF and the built-in search path.
@@ -24,12 +32,16 @@
 #     (the same pattern as misc/zfs-nuke.sh, inlined here).
 #   * Destroys the jail's ZFS dataset recursively.
 #   * Removes /etc/jail.conf.d/$NAME.fstab if present.
+#   * With --remove-conf, also removes the per-jail
+#     /etc/jail.conf.d/<N>-<name>.conf (auto-detected by name).
+#     Without it, the per-jail conf is preserved.
 #
 # What this script does NOT do:
 #   * Stop a running jail — refuse with instructions instead
-#   * Touch /etc/jail.conf or /etc/jail.conf.d/*.conf
+#   * Touch the global /etc/jail.conf
 #   * Unmount anything (assumes the jail is stopped; no nullfs mounts active)
 #   * Touch base release datasets (/usr/jails/.releases/*)
+#   * Remove the per-jail conf unless --remove-conf is passed
 #
 # Configuration:
 #   The script reads shell variables from the first conf file found in:
@@ -49,6 +61,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 JAIL_NAME=
 ASSUME_YES=0
+REMOVE_CONF=0
 CONF_PATH=
 
 usage() {
@@ -104,6 +117,10 @@ parse_args() {
 				;;
 			-y|--yes)
 				ASSUME_YES=1
+				shift
+				;;
+			--remove-conf)
+				REMOVE_CONF=1
 				shift
 				;;
 			-c|--conf)
@@ -209,17 +226,52 @@ remove_fstab() {
 	fi
 }
 
+# Prints the matching /etc/jail.conf.d/*-<name>.conf path on stdout, or
+# returns 1 if no match.  Errors out if more than one match (duplicates
+# are a user-error case; the script refuses to pick arbitrarily).
+detect_existing_conf_path() {
+	set --
+	for _f in /etc/jail.conf.d/*-"${JAIL_NAME}".conf; do
+		[ -f "$_f" ] || continue
+		set -- "$@" "$_f"
+	done
+	case $# in
+		0) return 1 ;;
+		1) printf '%s\n' "$1"; return 0 ;;
+		*)
+			err "multiple jail.conf.d entries match name '$JAIL_NAME':"
+			printf '  %s\n' "$@" >&2
+			err "remove the duplicates and re-run"
+			exit 1
+			;;
+	esac
+}
+
+remove_conf() {
+	if _path=$(detect_existing_conf_path); then
+		printf '=== %s: removing per-jail conf %s ===\n' "$JAIL_NAME" "$_path"
+		rm -- "$_path" || { err "failed to remove per-jail conf: $_path"; exit 1; }
+	else
+		printf '=== %s: no per-jail conf found to remove ===\n' "$JAIL_NAME" >&2
+	fi
+}
+
 print_summary() {
+	if [ "$REMOVE_CONF" -eq 1 ]; then
+		_conf_note="removed (or was already gone)"
+	else
+		_conf_note="preserved (use --remove-conf to delete)"
+	fi
 	cat <<EOF
 
 === $JAIL_NAME: destruction complete ===
 
 Dataset destroyed: $JAIL_PARENT_ZFS/$JAIL_NAME
 Fstab:             /etc/jail.conf.d/$JAIL_NAME.fstab (removed or was already gone)
+Per-jail conf:     ${_conf_note}
 
 Not done (by design):
-  * /etc/jail.conf or /etc/jail.conf.d/$JAIL_NAME.conf was NOT touched.
-    Remove that yourself if you no longer need it.
+  * The global /etc/jail.conf was NOT touched.
   * Any base release under $JAIL_PARENT/.releases/ was NOT touched.
 EOF
 }
@@ -244,6 +296,9 @@ main() {
 	confirm_destruction
 	release_holds_and_destroy
 	remove_fstab
+	if [ "$REMOVE_CONF" -eq 1 ]; then
+		remove_conf
+	fi
 	print_summary
 }
 

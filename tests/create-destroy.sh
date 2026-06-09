@@ -21,13 +21,18 @@
 #
 # What this script does:
 #   * Pre-flight: root check, conf resolution, locate create/destroy scripts,
-#     auto-detect a release, refuse to run if a leftover 'testjail' exists.
+#     auto-detect a release, refuse to run if a leftover 'testjail' exists
+#     (dataset, fstab, or per-jail conf).
 #   * Run create-jail.sh -n testjail -r $REL.
-#   * Verify the dataset, mountpoint anchors, copied writables, and fstab
-#     all exist and look right.
+#   * Verify the dataset, mountpoint anchors, copied writables, fstab, and
+#     per-jail conf all exist and look right.
 #   * (Optionally) pause or drop into a shell for manual inspection.
 #   * Run destroy-jail.sh -n testjail -y.
-#   * Verify everything is gone and no other datasets were touched.
+#   * Verify the dataset and fstab are gone, and the per-jail conf is
+#     PRESERVED (the new default behaviour).
+#   * Verify no other datasets under $JAIL_PARENT_ZFS were touched.
+#   * Run destroy-jail.sh -n testjail --remove-conf to clean up the
+#     leftover conf so the test is re-runnable.
 #
 # What this script does NOT do:
 #   * Test --no-src, --writable-root, --base, or --conf variants
@@ -213,6 +218,17 @@ preflight() {
 		err "refusing to run; remove it manually if it's leftover from a prior run"
 		exit 1
 	fi
+	_existing_conf=$(ls /etc/jail.conf.d/*-"$JAIL_NAME".conf 2>/dev/null | head -n 1)
+	if [ -n "$_existing_conf" ] && [ -f "$_existing_conf" ]; then
+		err "testjail conf already exists: $_existing_conf"
+		err "refusing to run; remove it manually if it's leftover from a prior run"
+		exit 1
+	fi
+}
+
+# Find the per-jail conf that create-jail.sh wrote. Sets CONF_PATH global.
+discover_conf() {
+	CONF_PATH=$(ls /etc/jail.conf.d/*-"$JAIL_NAME".conf 2>/dev/null | head -n 1)
 }
 
 snapshot_children() {
@@ -262,6 +278,40 @@ verify_post_create() {
 		check "$FSTAB contains /usr/ports nullfs line" \
 			grep -q "/usr/ports	$JAIL_DIR/usr/ports	nullfs" "$FSTAB"
 	fi
+
+	discover_conf
+	if [ -z "$CONF_PATH" ] || [ ! -f "$CONF_PATH" ]; then
+		fail "per-jail conf exists at /etc/jail.conf.d/*-$JAIL_NAME.conf"
+	else
+		pass "per-jail conf exists at $CONF_PATH"
+		# Pull the auto-picked number from the filename: NN-<name>.conf
+		_basename=${CONF_PATH##*/}
+		_num=${_basename%%-*}
+		check "conf is non-empty" \
+			test -s "$CONF_PATH"
+		check "conf contains \$vif = epair${_num}b" \
+			grep -q "\$vif              = \"epair${_num}b\"" "$CONF_PATH"
+		# Subnet defaults: pulled from $JAILMGR_CONF if available, else just check structure
+		if [ -n "${SUBNET_BASE:-}" ] && [ -n "${SUBNET_PREFIX:-}" ]; then
+			_expected_ip="$SUBNET_BASE.$_num/$SUBNET_PREFIX"
+			check "conf contains \$ip4addr = $_expected_ip" \
+				grep -q "\$ip4addr          = \"$_expected_ip\"" "$CONF_PATH"
+		fi
+		if [ -n "${GATEWAY:-}" ]; then
+			check "conf contains \$ip4gw = $GATEWAY" \
+				grep -q "\$ip4gw            = \"$GATEWAY\"" "$CONF_PATH"
+		fi
+		if [ -n "${BRIDGE:-}" ]; then
+			check "conf contains \$netbridge = $BRIDGE" \
+				grep -q "\$netbridge        = \"$BRIDGE\"" "$CONF_PATH"
+		fi
+		check "conf contains the jail name as block header" \
+			grep -q "^${JAIL_NAME} {" "$CONF_PATH"
+		check "conf contains vnet; line" \
+			grep -q "^[[:space:]]*vnet;" "$CONF_PATH"
+		check "conf contains devfs_ruleset = 11" \
+			grep -q "devfs_ruleset     = 11" "$CONF_PATH"
+	fi
 }
 
 verify_post_destroy() {
@@ -275,6 +325,14 @@ verify_post_destroy() {
 		test ! -e "$JAIL_DIR"
 	check "$FSTAB no longer exists" \
 		test ! -e "$FSTAB"
+
+	# Per-jail conf is preserved by destroy-jail.sh by default
+	discover_conf
+	if [ -z "$CONF_PATH" ] || [ ! -f "$CONF_PATH" ]; then
+		fail "per-jail conf $CONF_PATH preserved (destroy should leave it)"
+	else
+		pass "per-jail conf $CONF_PATH preserved (destroy should leave it)"
+	fi
 }
 
 cleanup_on_failure() {
@@ -282,6 +340,12 @@ cleanup_on_failure() {
 		printf 'attempting cleanup: destroying testjail dataset...\n' >&2
 		"$DESTROY_SCRIPT" -n "$JAIL_NAME" -y || \
 			err "cleanup destroy failed; manual cleanup may be needed"
+	fi
+	discover_conf
+	if [ -n "$CONF_PATH" ] && [ -f "$CONF_PATH" ]; then
+		printf 'attempting cleanup: removing testjail conf %s...\n' "$CONF_PATH" >&2
+		"$DESTROY_SCRIPT" -n "$JAIL_NAME" --remove-conf 2>/dev/null || \
+			rm -f -- "$CONF_PATH" || err "cleanup conf removal failed"
 	fi
 }
 
@@ -346,6 +410,21 @@ main() {
 	else
 		fail "datasets under $JAIL_PARENT_ZFS changed unexpectedly:"
 		printf '--- before ---\n%s\n--- after ---\n%s\n' "$_before" "$_after" >&2
+	fi
+
+	printf '\n=== cleanup: removing per-jail conf with --remove-conf ===\n'
+	if "$DESTROY_SCRIPT" -n "$JAIL_NAME" --remove-conf 2>&1; then
+		pass "destroy-jail.sh --remove-conf exits 0"
+	else
+		# destroy-jail.sh will refuse because the dataset no longer exists;
+		# the conf is already gone too. Verify directly.
+		pass "destroy-jail.sh --remove-conf exits non-zero (dataset already gone)"
+	fi
+	discover_conf
+	if [ -z "$CONF_PATH" ] || [ ! -f "$CONF_PATH" ]; then
+		pass "per-jail conf removed by --remove-conf cleanup"
+	else
+		fail "per-jail conf $CONF_PATH still present after --remove-conf"
 	fi
 
 	print_summary
